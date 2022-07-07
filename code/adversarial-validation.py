@@ -6,6 +6,7 @@ from copy import deepcopy
 from typing import Dict, Callable
 
 from sklearn.model_selection import train_test_split
+import pickle
 
 import shap
 
@@ -141,3 +142,10 @@ class AdversarialValidation:
                 ldf.append((most_important_feature, tmp_performance))
 
         return pd.DataFrame(ldf, columns=["columns", "adversarial_model_performance"])
+
+    def save_model(self, model_name: str = "adversarial_classfier"):
+        """ """
+
+        pickle.dump(
+            self.base_estimator, open(f"model-files/{model_name}.pickle", "wb")
+        )
