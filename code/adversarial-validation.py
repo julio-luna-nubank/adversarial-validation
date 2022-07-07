@@ -11,143 +11,133 @@ import shap
 
 import tqdm
 
+from xgboost import XGBClassfier
 
 
 class AdversarialValidation:
 
-	"""
+    """ """
 
-	"""
+    def __init__(
+        self,
+        features: list = [],
+        base_estimator: Callable = None,
+        time_column: str = None,
+        train_end_date: str = None,
+        random_state: int = 42,
+    ):
 
-	def __init__(self,
-	  			 features:list = [],
-	  			 base_estimator:Callable = None,
-	  			 time_column:str = None,
-	  			 train_end_date:str = None,
-	  			 random_state:int = 42
-	  			 ):
-        
-		self.features = features
-		self.base_estimator = base_estimator
-		self.time_column = time_column
-		self.train_end_date = train_end_date
-		self.random_state = random_state
+        self.features = features
+        self.base_estimator = base_estimator
+        self.time_column = time_column
+        self.train_end_date = train_end_date
+        self.random_state = random_state
 
-	def _make_split(self, frame):
+    def _make_split(self, frame):
 
-		frame.loc[:,"target"] = np.where(frame[self.time_column] < self.train_end_date, 0, 1)
+        frame.loc[:, "target"] = np.where(
+            frame[self.time_column] < self.train_end_date, 0, 1
+        )
 
-		X_train, X_train, y_train, y_test = train_test_split(frame[self.features],
-		 													 frame["target"],
-		 													 test_size = self.test_size,
-		 													 random_state = self.random_state
-		 													)
+        X_train, X_train, y_train, y_test = train_test_split(
+            frame[self.features],
+            frame["target"],
+            test_size=self.test_size,
+            random_state=self.random_state,
+        )
 
-		return X_train, X_test, y_train, y_test
+        return X_train, X_test, y_train, y_test
 
+    def fit(self, frame: pd.DataFrame = pd.DataFrame([]), estimator_params: dict = {}):
+        """ """
 
-	def fit(self,frame:pd.DataFrame):
-		"""
+        X_train, X_test, y_train, y_test = self._make_split(frame)
 
-		"""
+        if self.base_estimator is None:
+            self.base_estimator = XGBClassfier(**estimator_params).fit(
+                self.X_train, self.y_train
+            )
 
-		X_train, X_test, y_train, y_test = self._make_split(frame)
+        predictions = self.predict_proba(X_test)[:, 1]
 
+        self.performance_ = roc_auc_score(y_true=y_test, y_score=predictions)
 
+        explainer = shap.TreeExplainer(model=self.base_estimator)
+        self.shap_values = explainer.shap_values(X_test)
 
-		if self.base_estimator is None:
-			from lightgbm import LGBMClassfier
-			self.base_estimator = LGBMClassfier(**estimator_params).fit(self.X_train, self.y_train)
+        return self
 
-		predictions = self.predict_proba(X_test)[:,1]
+    def predict(self, frame):
 
-		self.performance_ = roc_auc_score(y_true = y_test, y_score = predictions)
+        predictions = self.base_estimator.predict(frame[self.features])
 
-		explainer = shap.TreeExplainer(model = self.base_estimator)
-		self.shap_values = explainer.shap_values(X_test)
-		
+        return predictions
 
-		return self
+    def predict_proba(self, frame):
 
-	def predict(self, frame):
+        predictions = self.base_estimator.predict_proba(frame[self.features])
 
-		predictions = self.base_estimator.predict(frame[self.features])
+        return predictions
 
-		return predictions
+    def plot_shap_values(self, frame, plot_type: str = "dot"):
 
+        """ """
 
-	def predict_proba(self, frame):
+        shap.summary_plot(
+            self.shap_values, feature_names=self.features, plot_type=plot_type
+        )
 
-		predictions = self.base_estimator.predict_proba(frame[self.features])
+    def recursive_feature_elimination(
+        self,
+        frame: pd.DataFrame,
+        n_features_remove: int = None,
+        threshold_remove_until: float = 0.5,
+    ):
 
-		return predictions
+        """ """
 
+        ldf = list()
+        tmp_performance: float = 1.0
 
-	def plot_shap_values(self,frame, plot_type:str = "dot"):
-		
-		"""
+        all_features_shap = pd.DataFrame(
+            {"average_shap_value": np.abs(self.shap_values).mean()}, index=self.features
+        ).sort_values(ascending=False)
+        all_features_adversarial_performance = self.performance_
+        most_important_feature: str = all_features_shap.idxmax()
 
-		"""
+        ldf.append(("all_features", all_features_adversarial_performance))
 
-		shap.summary_plot(self.shap_values, feature_names = self.features, plot_type = plot_type)
+        tmp_features = self.features[:]
 
+        if n_features_remove is not None:
+            for iter in tqdm(range(n_features_remove)):
+                tmp_frame = deepcopy(frame)
+                tmp_frame.drop(most_important_feature, axis=1, inplace=True)
+                tmp_features.remove(most_important_feature)
+                tmp_estimator = self.fit(tmp_frame)
 
-	def recursive_feature_elimination(self,frame:pd.DataFrame, n_features_remove:int = None, threshold_remove_until:float = .5):
+                tmp_features_shap = pd.DataFrame(
+                    {"average_shap_value": np.abs(self.shap_values).mean()},
+                    index=tmp_features,
+                ).sort_values(ascending=False)
+                most_important_feature: str = all_features_shap.idxmax()
+                tmp_performance = self.performance_
 
-		"""
+                ldf.append((most_important_feature, tmp_performance))
+        elif threshold_remove_until is not None:
+            while (tmp_performance > threshold_remove_until) and len(tmp_features) > 0:
+                tmp_frame = deepcopy(frame)
+                tmp_frame.drop(most_important_feature, axis=1, inplace=True)
+                tmp_features.remove(most_important_feature)
+                tmp_estimator = self.fit(tmp_frame)
 
-		"""
-		ldf = list()
-		tmp_performance:float = 1.0
+                tmp_features_shap = pd.DataFrame(
+                    {"average_shap_value": np.abs(self.shap_values).mean()},
+                    index=tmp_features,
+                ).sort_values(ascending=False)
+                most_important_feature: str = all_features_shap.idxmax()
+                tmp_performance = self.performance_
 
-		all_features_shap = pd.DataFrame({"average_shap_value":np.abs(self.shap_values).mean()}, index = self.features).sort_values(ascending = False)
-		all_features_adversarial_performance = self.performance_
-		most_important_feature:str = all_features_shap.idxmax()
+                ldf.append((most_important_feature, tmp_performance))
 
-		ldf.append(("all_features",all_features_adversarial_performance))
-
-		tmp_features = self.features[:]
-
-		if n_features_remove is not None:
-			for iter in tqdm(range(n_features_remove)):
-				tmp_frame = deepcopy(frame)
-				tmp_frame.drop(most_important_feature, axis = 1, inplace = True)
-				tmp_features.remove(most_important_feature)
-				tmp_estimator = self.fit(tmp_frame)
-
-				tmp_features_shap = pd.DataFrame({"average_shap_value":np.abs(self.shap_values).mean()}, index = tmp_features).sort_values(ascending = False)
-				most_important_feature:str = all_features_shap.idxmax()
-				tmp_performance = self.performance_
-
-				ldf.append((most_important_feature,tmp_performance))
-		elif threshold_remove_until is not None:
-			while (tmp_performance > threshold_remove_until) and len(tmp_features) > 0:
-				tmp_frame = deepcopy(frame)
-				tmp_frame.drop(most_important_feature, axis = 1, inplace = True)
-				tmp_features.remove(most_important_feature)
-				tmp_estimator = self.fit(tmp_frame)
-
-				tmp_features_shap = pd.DataFrame({"average_shap_value":np.abs(self.shap_values).mean()}, index = tmp_features).sort_values(ascending = False)
-				most_important_feature:str = all_features_shap.idxmax()
-				tmp_performance = self.performance_
-
-				ldf.append((most_important_feature,tmp_performance))
-
-
-		return pd.DataFrame(ldf, columns = ["columns", "adversarial_model_performance"])
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+        return pd.DataFrame(ldf, columns=["columns", "adversarial_model_performance"])
